@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::Serverless-2016-10-31'
+Description: song-detection-stack
+
+Parameters:
+  DBClusterName:
+    Description: Aurora DB cluster name.
+    Type: String
+    Default: aurora-cluster-for-songs
+  DatabaseName:
+    Description: Aurora database name.
+    Type: String
+    Default: song_fingerprints
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9_]*'
+    ConstraintDescription: Must begin with a letter and only contain alphanumeric characters.
+  DBAdminUserName:
+    Description: The admin user name.
+    Type: String
+    Default: admin_user
+    MinLength: '2'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z0-9_]+'
+    ConstraintDescription: Must be between 2 to 16 alphanumeric characters.
+
+Resources:
+
+  # Secrets Manager for DB password
+  DBSecretPassword:
+    Type: 'AWS::SecretsManager::Secret'
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Name: !Sub '${DBClusterName}-AuroraUserSecretPassword'
+      Description: RDS database auto-generated user password
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DBAdminUserName}"}'
+        GenerateStringKey: password
+        PasswordLength: 30
+        ExcludeCharacters: '"@/\'
+
+  # Aurora Serverless v2 DB Cluster with Data API
+  AuroraCluster:
+    Type: 'AWS::RDS::DBCluster'
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBClusterIdentifier: !Ref DBClusterName
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DBSecretPassword}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DBSecretPassword}:SecretString:password}}'
+      DatabaseName: !Ref DatabaseName
+      Engine: aurora-postgresql
+      EngineMode: provisioned
+      StorageEncrypted: true
+      EnableHttpEndpoint: true
+      BackupRetentionPeriod: 1
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 1
+
+  AuroraInstance:
+    Type: 'AWS::RDS::DBInstance'
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Engine: aurora-postgresql
+      DBInstanceClass: db.serverless
+      DBClusterIdentifier: !Ref AuroraCluster
+      PubliclyAccessible: false
+
+  FileProcessor:
+    Type: 'AWS::Serverless::Function'
+    Properties:
+      PackageType: Image
+      MemorySize: 10240
+      EphemeralStorage:
+        Size: 10240
+      Timeout: 180
+      Environment:
+        Variables:
+          DBClusterArn: !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DBClusterName}'
+          DBName: !Ref DatabaseName
+          SecretArn: !Ref DBSecretPassword
+          SourceBucket: !Ref SourceBucket
+          SNSNotificationTopic: !Ref StreamSongNotificationTopic
+      Events:
+        Trigger:
+          Type: EventBridgeRule
+          Properties:
+            Pattern:
+              source: ["aws.s3"]
+              detail-type: ["Object Created"]
+              resources: [!GetAtt SourceBucket.Arn]
+              detail:
+                object:
+                  key:
+                    - {"suffix": ".mp3"}
+                    - {"suffix": ".ts"}
+                    - {"suffix": ".wav"}
+                    - {"suffix": ".ogg"}
+                    - {"suffix": ".aac"}
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref SourceBucket
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref DBSecretPassword
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt StreamSongNotificationTopic.TopicName
+        - Statement:
+          - Effect: Allow
+            Action: 'rds-data:ExecuteStatement'
+            Resource: !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DBClusterName}'
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: src/file_processor/
+      DockerTag: python3.11-v1
+
+  SourceBucket:
+    Type: 'AWS::S3::Bucket'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: True
+      AccessControl: "BucketOwnerFullControl"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Suspended
+
+  StreamSongNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: "StreamSongNotifications"
+
+  StreamSongsDetectedQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      MessageRetentionPeriod: 200000
+
+  QueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref StreamSongsDetectedQueue
+      PolicyDocument:
+        Statement:
+          Effect: Allow
+          Principal:
+            Service: sns.amazonaws.com
+          Action: "sqs:SendMessage"
+          Resource: !GetAtt StreamSongsDetectedQueue.Arn
+
+  myQueueToSnsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt StreamSongsDetectedQueue.Arn
+      Protocol: sqs
+      RawMessageDelivery: true
+      TopicArn: !Ref StreamSongNotificationTopic
+
+Outputs:
+  DBClusterArn:
+    Description: Aurora DB Cluster Resource ARN
+    Value: !Sub 'arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DBClusterName}'
+  DBClusterEndpoint:
+    Description: Aurora DB Cluster Endpoint Address
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+  DBName:
+    Description: Aurora Database Name
+    Value: !Ref DatabaseName
+  DBAdminUserName:
+    Description: Aurora Database Admin User
+    Value: !Ref DBAdminUserName
+  SecretArn:
+    Description: Secrets Manager Secret ARN
+    Value: !Ref DBSecretPassword
+  SourceBucket:
+    Description: S3 bucket for ingesting and checking songs
+    Value: !Ref SourceBucket
+  NotificationTopic:
+    Description: SNS topic for notifications
+    Value: !Ref StreamSongNotificationTopic
+  StreamSongsDetectedQueue:
+    Description: SQS queue for songs detected in stream
+    Value: !Ref StreamSongsDetectedQueue

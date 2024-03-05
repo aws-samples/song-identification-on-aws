@@ -1,0 +1,16 @@
+- figure out when there's no match
+
+- delete fingerprints for a song if we're re-indexing into
+
+- implement matching
+
+- lambda (node) that listens to a stream and stores the audio into a file stored on S3
+    - need to ensure that the files from a stream are emitted in order - but will they always be picked up in order?
+
+- modify existing lambda to handle streamed data
+
+- remove unused elements from sql_utils
+
+- SNS enough?  Order?
+
+- Simple UI to demo stream monitoring
