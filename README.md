@@ -81,7 +81,7 @@ These steps will create a channel that accepts the input stream and writes out m
 To delete the sample application that you created, use the AWS CLI. Assuming you used a name of 'song-detection' for the stack name, you can run the following:
 
 ```bash
-aws cloudformation delete-stack --stack-name song-detection
+sam delete --stack-name song-detection
 ```
 
 ## Security
