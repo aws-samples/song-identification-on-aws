@@ -1,5 +1,5 @@
 # Identifying music in audio files and streams on AWS
-This repo contains sample code that accompanies the blog post "Identifying music in audio files and streams on AWS".
+This repo contains sample code that accompanies the blog post [Identifying music in audio files and streams on AWS](https://aws.amazon.com/blogs/media/identifying-music-in-audio-files-and-streams-on-aws/).
 
 This repo includes an AWS SAM template that will create all of the required infrastructure needed, including an S3 bucket, a Lambda function with an EventBridge mechanism to run the Lambda when new files are added to the S3 bucket, an Aurora Serverless v2 database to store the data needed to identify songs, and other elements like an SNS notification topic and SQS queue for notifications.
 
